@@ -15,13 +15,13 @@
 #include <ArduinoJson.h>  // Instale: ArduinoJson by Benoit Blanchon v6+
 
 // ─── CONFIGURAÇÕES ───────────────────────────────────────────────
-const char* WIFI_SSID = "SEU_WIFI";
-const char* WIFI_PASSWORD = "SUA_SENHA";
+const char* WIFI_SSID = "Tripoloski_2.4GHz";
+const char* WIFI_PASSWORD = "4815162342";
 
-const char* OWM_API_KEY = "SUA_CHAVE_OPENWEATHERMAP";
+const char* OWM_API_KEY = "9ee3e7f5fa88acc7b7cf7adfa5f897da";
 const char* OWM_CITY = "Rio de Janeiro";  // ou use lat/lon abaixo
-const float OWM_LAT = -22.9068;
-const float OWM_LON = -43.1729;
+const float OWM_LAT = -21.1397;
+const float OWM_LON = -41.6633;
 
 // ─── PINOS ───────────────────────────────────────────────────────
 const int PIN_SENSOR_1 = 34;
