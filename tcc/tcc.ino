@@ -2,12 +2,23 @@
  * Sistema de Irrigação Inteligente - ESP32
  * 3x Sensores Capacitivos de Umidade do Solo
  * + Previsão do Tempo via OpenWeatherMap API
+ * + Envio de dados para ThingSpeak
  *
  * Pinos dos sensores:
  *   Sensor 1 -> GPIO 34 (ADC1_CH6)
  *   Sensor 2 -> GPIO 35 (ADC1_CH7)
  *   Sensor 3 -> GPIO 32 (ADC1_CH4)
  *   Relé da bomba -> GPIO 26
+ *
+ * ThingSpeak — mapeamento dos fields:
+ *   field1 = Umidade Solo Sensor 1 (%)
+ *   field2 = Umidade Solo Sensor 2 (%)
+ *   field3 = Umidade Solo Sensor 3 (%)
+ *   field4 = Média Umidade Solo (%)
+ *   field5 = Temperatura do Ar (°C)
+ *   field6 = Umidade Relativa do Ar (%)
+ *   field7 = Chuva Prevista nas próx. horas (mm)
+ *   field8 = Estado do Relé (1=irrigando, 0=desligado)
  */
 
 #include <WiFi.h>
@@ -22,6 +33,12 @@ const char* OWM_API_KEY = "9ee3e7f5fa88acc7b7cf7adfa5f897da";
 const char* OWM_CITY = "Rio de Janeiro";  // ou use lat/lon abaixo
 const float OWM_LAT = -21.1397;
 const float OWM_LON = -41.6633;
+
+// ─── THINGSPEAK ──────────────────────────────────────────────────
+// Crie um canal em https://thingspeak.com e cole suas credenciais:
+const char* TS_WRITE_API_KEY = "SH31O5RE5DSTHM0A";  // Settings > API Keys
+// ThingSpeak gratuito: mínimo 15s entre envios
+const unsigned long INTERVALO_THINGSPEAK = 15UL * 60 * 1000;  // envia a cada 15 min
 
 // ─── PINOS ───────────────────────────────────────────────────────
 const int PIN_SENSOR_1 = 34;
@@ -64,8 +81,12 @@ struct DadosClimaticos {
 DadosClimaticos clima;
 unsigned long ultimaLeituraMs = 0;
 unsigned long ultimoWeatherMs = 0;
+unsigned long ultimoThingspeakMs = 0;
 unsigned long inicioIrrigacaoMs = 0;
 bool irrigando = false;
+
+// Últimas leituras dos sensores (para o ThingSpeak ter acesso fora de avaliarIrrigacao)
+float ultimaU1 = 0, ultimaU2 = 0, ultimaU3 = 0;
 
 // ─── FUNÇÕES AUXILIARES ───────────────────────────────────────────
 
@@ -101,6 +122,48 @@ void desligarBomba() {
     digitalWrite(PIN_RELE, HIGH);  // desativa relé
     irrigando = false;
     Serial.println("✅ IRRIGAÇÃO ENCERRADA");
+  }
+}
+
+// ─── THINGSPEAK ───────────────────────────────────────────────────
+
+void enviarThingSpeak(float u1, float u2, float u3) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("⚠️  ThingSpeak: sem WiFi, envio ignorado.");
+    return;
+  }
+
+  float media = (u1 + u2 + u3) / 3.0;
+
+  // Monta a URL com todos os fields em uma única requisição GET
+  String url = "http://api.thingspeak.com/update?api_key=";
+  url += TS_WRITE_API_KEY;
+  url += "&field1=" + String(u1, 1);
+  url += "&field2=" + String(u2, 1);
+  url += "&field3=" + String(u3, 1);
+  url += "&field4=" + String(media, 1);
+  url += "&field5=" + String(clima.tempC, 1);
+  url += "&field6=" + String(clima.umidadeAr, 1);
+  url += "&field7=" + String(clima.chuvaProximas, 2);
+  url += "&field8=" + String(irrigando ? 1 : 0);
+
+  HTTPClient http;
+  http.begin(url);
+  int code = http.GET();
+  String resposta = http.getString();
+  http.end();
+
+  if (code == 200 && resposta.toInt() > 0) {
+    Serial.println("☁️  ThingSpeak: enviado (entry #" + resposta + ")");
+    Serial.printf(
+      "   S1=%.1f%% S2=%.1f%% S3=%.1f%% Media=%.1f%% "
+      "T=%.1f°C UR=%.0f%% Chuva=%.2fmm Rele=%d\n",
+      u1, u2, u3, media,
+      clima.tempC, clima.umidadeAr, clima.chuvaProximas, irrigando ? 1 : 0);
+  } else if (resposta.toInt() == 0) {
+    Serial.println("⚠️  ThingSpeak: resposta 0 — intervalo mínimo de 15s não respeitado.");
+  } else {
+    Serial.println("❌ ThingSpeak: erro HTTP " + String(code));
   }
 }
 
@@ -194,6 +257,10 @@ void atualizarClima() {
 // ─── LÓGICA DE DECISÃO ────────────────────────────────────────────
 
 void avaliarIrrigacao(float u1, float u2, float u3) {
+  // Salva para uso no ThingSpeak mesmo fora deste ciclo
+  ultimaU1 = u1;
+  ultimaU2 = u2;
+  ultimaU3 = u3;
   float mediaUmidade = (u1 + u2 + u3) / 3.0;
 
   Serial.println("\n🌱 Avaliando irrigação...");
@@ -268,6 +335,7 @@ void setup() {
     Serial.println("\n✅ WiFi conectado! IP: " + WiFi.localIP().toString());
     atualizarClima();
     ultimoWeatherMs = millis();
+    ultimoThingspeakMs = millis() - INTERVALO_THINGSPEAK;  // força envio na 1ª leitura
   } else {
     Serial.println("\n⚠️  WiFi falhou. Operando apenas com sensores.");
   }
@@ -296,6 +364,12 @@ void loop() {
 
     avaliarIrrigacao(u1, u2, u3);
     ultimaLeituraMs = agora;
+  }
+
+  // Envia dados ao ThingSpeak a cada 15 min
+  if (agora - ultimoThingspeakMs >= INTERVALO_THINGSPEAK) {
+    enviarThingSpeak(ultimaU1, ultimaU2, ultimaU3);
+    ultimoThingspeakMs = agora;
   }
 
   // Segurança: desliga bomba após tempo máximo
